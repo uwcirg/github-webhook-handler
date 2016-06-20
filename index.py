@@ -4,6 +4,8 @@ import os
 import re
 import sys
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import subprocess
 import requests
 import ipaddress
@@ -29,6 +31,18 @@ if os.environ.get('USE_PROXYFIX', None) == 'true':
 app = Flask(__name__)
 app.debug = os.environ.get('DEBUG') == 'true'
 
+log = app.logger
+if app.debug:
+    log.setLevel(logging.DEBUG)
+else:
+    log.setLevel(logging.INFO)
+
+logfile = '/var/log/truenth-dev-webhooks/webhooks.log'
+logfile_handler = RotatingFileHandler(logfile, maxBytes=100000, backupCount=10)
+logfile_handler.setFormatter(logging.Formatter(
+    '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'))
+log.addHandler(logfile_handler)
+
 # The repos.json file should be readable by the user running the Flask app,
 # and the absolute path should be given by this environment variable.
 REPOS_JSON_PATH = os.environ['FLASK_GITHUB_WEBHOOK_REPOS_JSON']
@@ -37,6 +51,10 @@ REPOS_JSON_PATH = os.environ['FLASK_GITHUB_WEBHOOK_REPOS_JSON']
 @app.route("/", methods=['GET', 'POST'])
 def index():
     if request.method == 'GET':
+	log.debug("GET: OK")
+
+        repos = json.loads(io.open(REPOS_JSON_PATH, 'r').read())
+        log.debug("configured repos: %s", str(repos))
         return 'OK'
     elif request.method == 'POST':
         # Store the IP address of the requester
@@ -55,6 +73,7 @@ def index():
             if ipaddress.ip_address(request_ip) in ipaddress.ip_network(block):
                 break  # the remote_addr is within the network range of github.
         else:
+            log.debug("ABORT: not from github")
             abort(403)
 
         if request.headers.get('X-GitHub-Event') == "ping":
@@ -63,8 +82,10 @@ def index():
             return json.dumps({'msg': "wrong event type"})
 
         repos = json.loads(io.open(REPOS_JSON_PATH, 'r').read())
+        log.debug("configured repos: %s", str(repos))
 
         payload = json.loads(request.data)
+        log.debug("received POST: %s", str(payload))
         repo_meta = {
             'name': payload['repository']['name'],
             'owner': payload['repository']['owner']['name'],
@@ -94,9 +115,19 @@ def index():
                     abort(403)
 
             if repo.get('action', None):
-                for action in repo['action']:
-                    subp = subprocess.Popen(action, cwd=repo['path'])
-                    subp.wait()
+                try:
+                    for action in repo['action']:
+                        log.debug("call subprocess: %s, cwd=%s", action,
+                            repo['path'])
+                        subp = subprocess.Popen(action, cwd=repo['path'],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        sout, serr = subp.communicate()
+                        log.debug("stdout: %s", repr(sout))
+                        if serr:
+                            log.error("stderr: %s", repr(serr))
+                except Exception, e:
+                    log.exception(e)
+        log.debug('OK')
         return 'OK'
 
 # Check if python version is less than 2.7.7
