@@ -121,6 +121,9 @@ def index():
             if repo.get('action', None):
                 try:
                     for action in repo['action']:
+                        if 'user' in repo:
+                            action =["sudo", "-u", repo['user']] + action
+
                         log.debug("call subprocess: %s, cwd=%s", action,
                             repo['path'])
                         subp = subprocess.Popen(action, cwd=repo['path'],
